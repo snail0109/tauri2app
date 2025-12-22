@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>此应用需要访问您的位置信息来显示当前GPS位置。</string>
+	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
+	<string>此应用需要访问您的位置信息来提供GPS定位服务。</string>
+</dict>
+</plist>
