@@ -1,9 +1,14 @@
 name: Build Test APK
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
-  push:
-    branches: [ release ]
+    inputs:
+      version:
+        description: 'Release version (e.g., v1.0.0). Leave empty to use package.json version'
+        required: false
+        type: string
 
 jobs:
   build-test-apk:
@@ -51,7 +56,23 @@ jobs:
           key: ubuntu-latest-android-cargo
 
       - name: get version
-        run: echo "PACKAGE_VERSION=$(node -p "require('./package.json').version")" >> $GITHUB_ENV
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "release" ]; then
+            # 从 release 事件中获取版本号
+            VERSION="${{ github.event.release.tag_name }}"
+            # 移除 'v' 前缀（如果存在）
+            VERSION=${VERSION#v}
+          elif [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+            # 移除 'v' 前缀（如果存在）
+            VERSION=${VERSION#v}
+          else
+            VERSION=$(node -p "require('./package.json').version")
+          fi
+          echo "PACKAGE_VERSION=$VERSION" >> $GITHUB_ENV
+          echo "RELEASE_VERSION=v$VERSION" >> $GITHUB_ENV
+          echo "Version: $VERSION"
 
       - name: build Android Release APKs
         env:
@@ -64,10 +85,27 @@ jobs:
           pnpm tauri android init
           
           # 生成图标
-          pnpm tauri icon src-tauri/icons/icon.png
+          # pnpm tauri icon src-tauri/icons/icon.png
           
           # 恢复 git 状态
           git checkout .
+
+          # 更新版本号（因为 git checkout 会恢复配置文件）
+          VERSION="${{ env.PACKAGE_VERSION }}"
+          echo "Updating version to $VERSION after git checkout..."
+          
+          # 更新 tauri.conf.json
+          node -e "
+            const fs = require('fs');
+            const config = JSON.parse(fs.readFileSync('src-tauri/tauri.conf.json', 'utf8'));
+            config.version = '$VERSION';
+            fs.writeFileSync('src-tauri/tauri.conf.json', JSON.stringify(config, null, 2) + '\n');
+          "
+          
+          # 更新 Cargo.toml
+          sed -i "s/^version = \".*\"/version = \"$VERSION\"/" src-tauri/Cargo.toml
+          
+          echo "Updated version in tauri.conf.json and Cargo.toml to $VERSION"
 
           # 添加权限到 AndroidManifest.xml
           MANIFEST="src-tauri/gen/android/app/src/main/AndroidManifest.xml"
@@ -111,5 +149,27 @@ jobs:
           name: android-release-apks
           path: ./*.apk
           retention-days: 30
+
+      - name: Create or Update GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ env.RELEASE_VERSION }}
+          name: Release ${{ env.RELEASE_VERSION }}
+          body: |
+            ## Android Release ${{ env.RELEASE_VERSION }}
+            
+            ### APK Files
+            - **Universal APK**: `sensortool_${{ env.PACKAGE_VERSION }}_universal.apk`
+            - **ARM64 APK**: `sensortool_${{ env.PACKAGE_VERSION }}_arm64.apk`
+            
+            ### Installation
+            Download the appropriate APK file for your device architecture and install it.
+          files: |
+            sensortool_${{ env.PACKAGE_VERSION }}_universal.apk
+            sensortool_${{ env.PACKAGE_VERSION }}_arm64.apk
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 
