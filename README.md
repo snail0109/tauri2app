@@ -1,4 +1,4 @@
-# tauri2app
+# sensortool
 
 ## 开发
 ```
