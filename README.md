@@ -3,6 +3,8 @@
 ## 开发
 ```
 npm install
+
+cp .env.example .env
 # 安卓
 npm run tauri android init
 npm run tauri android dev
