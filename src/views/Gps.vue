@@ -1,6 +1,7 @@
 <script setup>
 import { ref, onMounted } from "vue";
 import { useRouter } from 'vue-router'
+import { fetch } from "@tauri-apps/plugin-http";
 import {
   checkPermissions,
   requestPermissions,
@@ -17,9 +18,44 @@ const altitudeAccuracy = ref(null);
 const error = ref(null);
 const loading = ref(false);
 const statusMsg = ref("");
+const posSource = ref("");
+
+const AMAP_KEY = import.meta.env.VITE_AMAP_KEY;
+const AMAP_SECRET = import.meta.env.VITE_AMAP_SECRET;
 
 function goBack() {
   router.push('/')
+}
+
+// 通过高德 IP 定位 API 快速获取大致位置
+async function getIPLocation() {
+  if (!AMAP_KEY) {
+    console.warn("未配置 VITE_AMAP_KEY，跳过 IP 定位");
+    return null;
+  }
+  try {
+    let url = `https://restapi.amap.com/v3/ip?key=${AMAP_KEY}&output=json`;
+    if (AMAP_SECRET) {
+      url += `&sig=${AMAP_SECRET}`;
+    }
+    const resp = await fetch(url, { method: "GET", connectTimeout: 5000 });
+    const data = await resp.json();
+    if (data.status === "1" && data.rectangle) {
+      // rectangle 格式: "左下经度,左下纬度;右上经度,右上纬度"
+      const parts = data.rectangle.split(";");
+      const [lng1, lat1] = parts[0].split(",").map(Number);
+      const [lng2, lat2] = parts[1].split(",").map(Number);
+      return {
+        latitude: (lat1 + lat2) / 2,
+        longitude: (lng1 + lng2) / 2,
+        accuracy: null, // IP 定位精度为城市级，不给具体数值
+        source: "IP定位(城市级)"
+      };
+    }
+  } catch (e) {
+    console.warn("IP定位失败:", e);
+  }
+  return null;
 }
 
 async function getLocation() {
@@ -28,9 +64,23 @@ async function getLocation() {
   latitude.value = null;
   longitude.value = null;
   accuracy.value = null;
-  statusMsg.value = "正在获取权限...";
+  altitude.value = null;
+  altitudeAccuracy.value = null;
+  posSource.value = "";
+  statusMsg.value = "正在快速定位...";
 
   try {
+    // 第1步：IP 定位，立即出结果（城市级精度）
+    const ipResult = await getIPLocation();
+    if (ipResult) {
+      latitude.value = formatToDMS(ipResult.latitude);
+      longitude.value = formatToDMS(ipResult.longitude);
+      accuracy.value = null;
+      posSource.value = ipResult.source;
+    }
+
+    // 第2步：请求系统定位权限
+    statusMsg.value = "正在获取定位权限...";
     let permissions = await checkPermissions();
 
     if (
@@ -42,46 +92,43 @@ async function getLocation() {
     }
 
     if (permissions.location !== 'granted') {
+      // 如果有 IP 定位结果，就用 IP 的，不报错
+      if (latitude.value !== null) {
+        loading.value = false;
+        statusMsg.value = "";
+        return;
+      }
       error.value = "权限被拒绝，无法获取位置";
       loading.value = false;
       statusMsg.value = "";
       return;
     }
 
-    statusMsg.value = "正在搜索卫星(GPS)...";
+    // 第3步：GPS 高精度定位
+    statusMsg.value = "正在搜索卫星提升精度...";
 
-    // 1. 尝试获取高精度位置 (30s 超时, 允许 5s 内的缓存)
-    // 增加超时时间以应对冷启动
-    const highAccuracyPos = await getCurrentPosition({
-      enableHighAccuracy: true,
-      timeout: 30000,
-      maximumAge: 5000
-    });
+    try {
+      const gpsPos = await getCurrentPosition({
+        enableHighAccuracy: true,
+        timeout: 30000,
+        maximumAge: 5000
+      });
+      updatePosition(gpsPos);
+      posSource.value = "GPS卫星定位";
+    } catch (gpsErr) {
+      console.warn("GPS定位失败:", gpsErr);
+      if (latitude.value === null) {
+        handleError(gpsErr);
+        return;
+      }
+    }
 
-    updatePosition(highAccuracyPos);
     loading.value = false;
     statusMsg.value = "";
 
   } catch (err) {
-    console.warn("High accuracy GPS failed/timed out:", err);
-    statusMsg.value = "GPS信号弱，尝试网络定位...";
-
-    try {
-      // 2. 降级尝试低精度/网络定位 (20s 超时, 允许 1min 内的缓存)
-      const lowAccuracyPos = await getCurrentPosition({
-        enableHighAccuracy: false,
-        timeout: 20000,
-        maximumAge: 60000
-      });
-
-      updatePosition(lowAccuracyPos);
-      loading.value = false;
-      statusMsg.value = "";
-
-    } catch (retryErr) {
-      console.error("All location attempts failed:", retryErr);
-      handleError(err); // 优先显示高精度的错误信息（通常是超时）
-    }
+    console.error("定位过程异常:", err);
+    handleError(err);
   }
 }
 
@@ -164,11 +211,11 @@ onMounted(() => {
           </div>
         </div>
 
-        <div class="meta-row" v-if="accuracy">
-          <span class="accuracy-tag" :class="accuracy < 50 ? 'good' : 'bad'">
+        <div class="meta-row" v-if="accuracy || posSource">
+          <span class="accuracy-tag" :class="accuracy && accuracy < 50 ? 'good' : 'bad'" v-if="accuracy">
             精度: ±{{ accuracy }}米
           </span>
-          <span class="source-tag">{{ accuracy < 50 ? 'GPS/高精度' : '网络/低精度' }}</span>
+          <span class="source-tag" v-if="posSource">{{ posSource }}</span>
         </div>
       </div>
 
